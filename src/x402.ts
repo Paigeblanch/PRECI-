@@ -4,11 +4,12 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions";
 import type { NextFunction, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
+import { log } from "./logger.js";
 
 const WALLET = process.env.WALLET_ADDRESS ?? "";
 const X402_ENABLED = process.env.X402_ENABLED !== "false";
 const NETWORK = "eip155:8453" as Network; // Base mainnet
-const FACILITATOR_URL = "https://x402.org/facilitator";
+const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
 
 function passthrough(_req: Request, _res: Response, next: NextFunction) {
   return next();
@@ -19,7 +20,20 @@ function buildMiddleware() {
 
   const server = new x402ResourceServer(facilitator)
     .register(NETWORK, new ExactEvmScheme())
-    .registerExtension(bazaarResourceServerExtension);
+    .registerExtension(bazaarResourceServerExtension)
+    .onAfterSettle(async (ctx) => {
+      const payload = ctx.paymentPayload as Record<string, unknown>;
+      const reqs = ctx.requirements as Record<string, unknown>;
+      await log({
+        ts: new Date().toISOString(),
+        event: "payment_settled",
+        amount_usdc: reqs["amount"] ?? null,
+        network: reqs["network"] ?? null,
+        tx_hash: (payload["payload"] as any)?.transaction_hash ?? payload["transaction_hash"] ?? null,
+        payer: (payload["payload"] as any)?.from ?? payload["from"] ?? null,
+        resource: reqs["resource"] ?? null
+      });
+    });
 
   const routes = {
     "POST /score/url": {
@@ -32,8 +46,7 @@ function buildMiddleware() {
           type: "object",
           properties: {
             url: { type: "string", description: "The API endpoint URL to probe and score" },
-            service_id: { type: "string", description: "Optional stable identifier for this service" },
-            sample_count: { type: "integer", description: "Number of past observations for reliability scoring" }
+            service_id: { type: "string", description: "Optional stable identifier for this service" }
           },
           required: ["url"]
         },
@@ -64,8 +77,7 @@ function buildMiddleware() {
               type: "array",
               items: { type: "string" },
               minItems: 2,
-              maxItems: 10,
-              description: "Array of 2–10 API endpoint URLs to compare"
+              maxItems: 10
             }
           },
           required: ["candidates"]
@@ -76,17 +88,7 @@ function buildMiddleware() {
             properties: {
               recommendation: { type: "string" },
               reason: { type: "string" },
-              ranked: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    url: { type: "string" },
-                    trust_score: { type: "integer" },
-                    verdict: { type: "string" }
-                  }
-                }
-              },
+              ranked: { type: "array" },
               compared_at: { type: "string", format: "date-time" }
             }
           }
@@ -113,17 +115,7 @@ function buildMiddleware() {
               service_id: { type: "string" },
               trust_score: { type: "integer" },
               verdict: { type: "string" },
-              subscores: {
-                type: "object",
-                properties: {
-                  reachability: { type: "number" },
-                  speed: { type: "number" },
-                  reliability: { type: "number" },
-                  security: { type: "number" },
-                  data_quality: { type: "number" },
-                  confidence: { type: "number" }
-                }
-              }
+              subscores: { type: "object" }
             }
           }
         }

@@ -1,6 +1,6 @@
-import { appendFile } from "fs/promises";
+import { appendFile, readFile } from "fs/promises";
 
-const LOG_PATH = process.env.LOG_PATH ?? "./preci.log";
+export const LOG_PATH = process.env.LOG_PATH ?? "./preci.log";
 
 export interface ScoreLogEntry {
   ts: string;
@@ -24,12 +24,36 @@ export interface CompareLogEntry {
   caller_ip: string;
 }
 
-type LogEntry = ScoreLogEntry | CompareLogEntry;
+export interface PaymentLogEntry {
+  ts: string;
+  event: "payment_settled";
+  amount_usdc: string | number;
+  network: string;
+  tx_hash: string | null;
+  payer: string | null;
+  resource: string | null;
+}
+
+type LogEntry = ScoreLogEntry | CompareLogEntry | PaymentLogEntry | Record<string, unknown>;
 
 export async function log(entry: LogEntry): Promise<void> {
   try {
     await appendFile(LOG_PATH, JSON.stringify(entry) + "\n", "utf8");
   } catch {
     // logging must never crash the request
+  }
+}
+
+export async function readPaymentLogs(): Promise<PaymentLogEntry[]> {
+  try {
+    const raw = await readFile(LOG_PATH, "utf8");
+    return raw
+      .split("\n")
+      .filter(Boolean)
+      .map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .filter((e): e is PaymentLogEntry => e?.event === "payment_settled")
+      .reverse();
+  } catch {
+    return [];
   }
 }

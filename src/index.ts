@@ -7,7 +7,7 @@ import {
   validateCompareRequest,
   validateUrlProbeRequest
 } from "./scoring.js";
-import { log } from "./logger.js";
+import { log, readPaymentLogs } from "./logger.js";
 import { getScore, storeScore } from "./store.js";
 import type { CompareRequest, UrlProbeRequest } from "./types.js";
 import { x402 } from "./x402.js";
@@ -37,6 +37,16 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "PRECI", status: "healthy" });
+});
+
+app.get("/transactions", async (_req, res) => {
+  const payments = await readPaymentLogs();
+  const total = payments.reduce((sum, p) => sum + Number(p.amount_usdc ?? 0), 0);
+  return res.json({
+    count: payments.length,
+    total_usdc: total.toFixed(3),
+    payments
+  });
 });
 
 app.post("/score/url", async (req, res) => {
