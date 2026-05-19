@@ -1,172 +1,192 @@
 # PRECI
 
-PRECI is a real-time API trust scoring service for agents.
+**Real-time API trust scoring for AI agents.**
 
-Agents can send service health data to PRECI and receive:
+PRECI probes any API endpoint live and returns a trust score, verdict, and routing recommendation — purpose-built for agents that need to decide which service to call.
 
-- a trust score
-- a verdict
-- routing advice
-- scoring subscores
+**Base URL:** `https://preci.fly.dev`
 
-This first version is intentionally simple: Node.js, TypeScript, Express, no database, no auth, no payments, and no frontend.
+---
 
-## Install
+## Why PRECI
 
-```bash
-npm install
-```
+AI agents call external APIs constantly. When a service goes down, responds slowly, or returns malformed data, it breaks the whole chain. PRECI gives agents a single call to answer: *is this safe to route to right now?*
 
-## Run locally
+- **Active probing** — PRECI hits the endpoint itself. No stale data, no self-reported stats.
+- **Agent-native verdicts** — `trusted`, `verified`, `provisional`, or `inactive`. Direct routing signals, not raw numbers to interpret.
+- **Parallel comparison** — Submit multiple candidates, get back a ranked list with a plain-English recommendation.
+- **x402 payments** — Pay per call in USDC on Base. No API keys, no accounts, no rate limit tiers.
 
-```bash
-npm run dev
-```
-
-The API will run at:
-
-```text
-http://localhost:3000
-```
-
-## Build
-
-```bash
-npm run build
-```
-
-## Start built version
-
-```bash
-npm start
-```
+---
 
 ## Endpoints
 
-### GET /
+### `GET /`
+Returns service info and pricing. Free.
 
-Returns basic service information.
+### `GET /health`
+Health check. Free.
 
-### GET /health
+---
 
-Returns a simple health check.
+### `POST /score/url` — 0.005 USDC
 
-### POST /score
+Probe a URL and get a live trust score.
 
-Calculates a real-time trust score for an API service.
-
-## Example request
-
+**Request**
 ```json
 {
-  "service_id": "weather-api",
-  "current_status": "healthy",
-  "uptime_30d": 0.99,
-  "avg_latency_ms": 120,
-  "failure_rate": 0.02,
-  "data_age_seconds": 300,
-  "verification_age_seconds": 600,
-  "sample_size": 1000
+  "url": "https://api.example.com/v1/data",
+  "service_id": "example-api"
 }
 ```
 
-## Test /score with curl
+`service_id` is optional — defaults to the hostname if omitted.
 
-From the project root, run:
-
-```bash
-curl -X POST http://localhost:3000/score \
-  -H "Content-Type: application/json" \
-  --data @test/sample-request.json
-```
-
-For Windows PowerShell, run:
-
-```powershell
-Invoke-RestMethod -Method Post `
-  -Uri http://localhost:3000/score `
-  -ContentType "application/json" `
-  -InFile test/sample-request.json
-```
-
-## Example response
-
+**Response**
 ```json
 {
-  "service_id": "weather-api",
-  "trust_score": 98,
-  "verdict": "primary_route",
-  "execution_advice": "Auto-execute. Service is highly reliable.",
+  "service_id": "api.example.com",
+  "trust_score": 91,
+  "verdict": "trusted",
+  "execution_advice": "Auto-route. Service is highly reliable.",
+  "probed_at": "2026-05-19T10:00:00.000Z"
+}
+```
+
+---
+
+### `POST /compare` — 0.010 USDC
+
+Submit 2–10 URLs. PRECI probes all in parallel and returns a ranked list with a routing recommendation.
+
+**Request**
+```json
+{
+  "candidates": [
+    "https://api-primary.example.com/v1",
+    "https://api-backup.example.com/v1",
+    "https://api-fallback.example.com/v1"
+  ]
+}
+```
+
+**Response**
+```json
+{
+  "recommendation": "https://api-primary.example.com/v1",
+  "reason": "Trust score 94/100, 210ms response time, valid SSL, returns valid JSON, 12 points ahead of nearest alternative.",
+  "ranked": [
+    {
+      "url": "https://api-primary.example.com/v1",
+      "trust_score": 94,
+      "verdict": "trusted"
+    },
+    {
+      "url": "https://api-backup.example.com/v1",
+      "trust_score": 82,
+      "verdict": "verified"
+    },
+    {
+      "url": "https://api-fallback.example.com/v1",
+      "trust_score": 61,
+      "verdict": "provisional"
+    }
+  ],
+  "compared_at": "2026-05-19T10:00:00.000Z"
+}
+```
+
+---
+
+### `GET /score/:id/detail` — 0.003 USDC
+
+Retrieve the full scoring breakdown for a previously probed service, including all five subscores.
+
+**Response**
+```json
+{
+  "service_id": "api.example.com",
+  "trust_score": 91,
+  "verdict": "trusted",
   "subscores": {
-    "status_gate": 1,
-    "uptime": 0.99,
-    "latency": 0.94,
-    "failure": 0.98,
-    "data_freshness": 0.9965,
-    "verification_freshness": 0.9931,
-    "confidence": 1
-  },
-  "inputs_received": {
-    "service_id": "weather-api",
-    "current_status": "healthy",
-    "uptime_30d": 0.99,
-    "avg_latency_ms": 120,
-    "failure_rate": 0.02,
-    "data_age_seconds": 300,
-    "verification_age_seconds": 600,
-    "sample_size": 1000
+    "reachability": 1.0,
+    "speed": 0.93,
+    "reliability": 0.89,
+    "security": 1.0,
+    "data_quality": 1.0,
+    "confidence": 0.48
   }
 }
 ```
 
-## Scoring formula
+---
 
-If `current_status` is `down`, `unhealthy`, or `offline`, PRECI immediately returns:
+## Scoring
 
-- `trust_score`: `0`
-- `verdict`: `blacklisted`
-- `execution_advice`: `Do not route. Service is currently unavailable.`
+Trust score is a 0–100 composite across five dimensions:
 
-Otherwise, PRECI calculates subscores:
+| Dimension | Weight | What it measures |
+|---|---|---|
+| Reachability | 30% | HTTP status code — 2xx full, 3xx partial, 4xx/5xx penalized |
+| Speed | 25% | Response latency, ceiling at 3000ms |
+| Reliability | 25% | Uptime × (1 − failure rate) |
+| Security | 10% | SSL certificate validity and days remaining |
+| Data Quality | 10% | Whether the response is valid JSON |
 
-```text
-latency_score = max(0, 1 - avg_latency_ms / 2000)
-failure_score = max(0, 1 - failure_rate)
-data_freshness_score = max(0, 1 - data_age_seconds / 86400)
-verification_freshness_score = max(0, 1 - verification_age_seconds / 86400)
+**Verdicts**
+
+| Verdict | Score | Confidence | Meaning |
+|---|---|---|---|
+| `trusted` | ≥ 90 | ≥ 50 samples | Auto-route |
+| `verified` | ≥ 75 | ≥ 5 samples | Route with logging |
+| `provisional` | ≥ 60 | any | Proceed with caution |
+| `inactive` | < 60 | any | Do not route |
+
+Confidence gates the verdict — a high-scoring service with fewer than 5 samples is capped at `provisional` until enough history is collected.
+
+---
+
+## Payment
+
+PRECI uses the [x402 protocol](https://x402.org). Every paid request requires an `X-Payment` header containing a signed USDC transaction on Base mainnet.
+
+If the header is missing, the API returns HTTP `402` with the payment details your agent needs to construct one:
+
+```json
+{
+  "error": "Payment Required",
+  "payment": {
+    "scheme": "exact",
+    "price": "$0.005",
+    "network": "eip155:8453",
+    "payTo": "0xCCe325657c513fa4Ac418eec0AFc4eA02adD088E"
+  }
+}
 ```
 
-Then it calculates:
+PRECI is listed on the [x402 Bazaar](https://x402.org/bazaar) — x402-compatible agents can discover and call it automatically.
 
-```text
-base_score = 100 * (
-  0.40 * uptime_30d +
-  0.20 * latency_score +
-  0.20 * failure_score +
-  0.10 * data_freshness_score +
-  0.10 * verification_freshness_score
-)
+---
+
+## Running Locally
+
+```bash
+git clone https://github.com/Paigeblanch/PRECI.git
+cd PRECI
+npm install
+cp .env.example .env   # set your wallet address
+npm run dev
 ```
 
-Confidence is based on sample size:
+Set `X402_ENABLED=false` in `.env` to disable payment gates during development.
 
-```text
-confidence = min(1, log(1 + sample_size) / log(1001))
+---
+
+## Deploying
+
+```bash
+fly deploy --local-only
 ```
 
-Final score:
-
-```text
-final_score = base_score * (0.7 + 0.3 * confidence)
-```
-
-The final score is rounded to the nearest whole number.
-
-## Verdict bands
-
-| Score | Verdict | Routing advice |
-|---:|---|---|
-| 90-100 | primary_route | Auto-execute. Service is highly reliable. |
-| 75-89 | secondary_route | Route allowed. Log and monitor. |
-| 60-74 | human_review | Ask before routing. Reliability is uncertain. |
-| Below 60 | blacklisted | Do not route. Risk is too high. |
+Requires [Fly.io CLI](https://fly.io/docs/flyctl/install/) and Docker Desktop running locally.
