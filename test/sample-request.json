@@ -4,7 +4,5 @@
   "uptime_30d": 0.99,
   "avg_latency_ms": 120,
   "failure_rate": 0.02,
-  "data_age_seconds": 300,
-  "verification_age_seconds": 600,
   "sample_size": 1000
 }

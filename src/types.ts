@@ -6,32 +6,57 @@ export interface ScoreRequest {
   uptime_30d: number;
   avg_latency_ms: number;
   failure_rate: number;
-  data_age_seconds: number;
-  verification_age_seconds: number;
   sample_size: number;
 }
 
+export interface UrlProbeRequest {
+  url: string;
+  service_id?: string;
+}
+
 export type Verdict =
-  | "primary_route"
-  | "secondary_route"
-  | "human_review"
-  | "blacklisted";
+  | "trusted"
+  | "verified"
+  | "provisional"
+  | "inactive";
 
 export interface ScoreSubscores {
-  status_gate: 0 | 1;
-  uptime: number;
-  latency: number;
-  failure: number;
-  data_freshness: number;
-  verification_freshness: number;
+  reachability: number;
+  speed: number;
+  reliability: number;
+  security: number;
+  data_quality: number;
   confidence: number;
 }
 
-export interface ScoreResponse {
+export interface ScoreResult {
   service_id: string;
   trust_score: number;
   verdict: Verdict;
   execution_advice: string;
+  confidence_warning?: string;
+}
+
+export interface ScoreResultDetail extends ScoreResult {
   subscores: ScoreSubscores;
   inputs_received: ScoreRequest;
+  probed_at: string;
+}
+
+export interface CompareRequest {
+  candidates: string[];
+}
+
+export interface CompareCandidate {
+  url: string;
+  trust_score: number;
+  verdict: Verdict;
+  subscores: ScoreSubscores;
+}
+
+export interface CompareResponse {
+  recommendation: string;
+  reason: string;
+  ranked: CompareCandidate[];
+  compared_at: string;
 }
