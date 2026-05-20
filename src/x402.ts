@@ -16,7 +16,7 @@ const CDP_KEY_NAME = process.env.CDP_API_KEY_NAME ?? "";
 const CDP_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
 
 async function signCDPJwt(uri: string): Promise<string> {
-  const privateKey = createPrivateKey(CDP_KEY_SECRET);
+  const privateKey = createPrivateKey(CDP_KEY_SECRET.replace(/\\n/g, "\n"));
   const nonce = randomBytes(16).toString("hex");
   const jwt = await new SignJWT({ uris: [uri] })
     .setProtectedHeader({ alg: "ES256", kid: CDP_KEY_NAME, nonce })
