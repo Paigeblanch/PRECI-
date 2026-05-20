@@ -5,18 +5,50 @@ import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/
 import type { NextFunction, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
 import { log } from "./logger.js";
+import { SignJWT, importPKCS8 } from "jose";
+import { randomBytes } from "crypto";
 
 const WALLET = process.env.WALLET_ADDRESS ?? "";
 const X402_ENABLED = process.env.X402_ENABLED !== "false";
 const NETWORK = "eip155:8453" as Network; // Base mainnet
 const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
+const CDP_KEY_NAME = process.env.CDP_API_KEY_NAME ?? "";
+const CDP_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
+
+async function signCDPJwt(uri: string): Promise<string> {
+  const privateKey = await importPKCS8(CDP_KEY_SECRET, "ES256");
+  const nonce = randomBytes(16).toString("hex");
+  const jwt = await new SignJWT({ uris: [uri] })
+    .setProtectedHeader({ alg: "ES256", kid: CDP_KEY_NAME, nonce })
+    .setIssuedAt()
+    .setNotBefore(Math.floor(Date.now() / 1000))
+    .setExpirationTime("2m")
+    .setIssuer(CDP_KEY_NAME)
+    .setAudience(["cdp_service"])
+    .sign(privateKey);
+  return `Bearer ${jwt}`;
+}
 
 function passthrough(_req: Request, _res: Response, next: NextFunction) {
   return next();
 }
 
 function buildMiddleware() {
-  const facilitator = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+  const facilitator = new HTTPFacilitatorClient({
+    url: FACILITATOR_URL,
+    createAuthHeaders: async () => {
+      const [verifyToken, settleToken, supportedToken] = await Promise.all([
+        signCDPJwt(`${FACILITATOR_URL}/verify`),
+        signCDPJwt(`${FACILITATOR_URL}/settle`),
+        signCDPJwt(`${FACILITATOR_URL}/supported`)
+      ]);
+      return {
+        verify:    { Authorization: verifyToken },
+        settle:    { Authorization: settleToken },
+        supported: { Authorization: supportedToken }
+      };
+    }
+  });
 
   const server = new x402ResourceServer(facilitator)
     .register(NETWORK, new ExactEvmScheme())
