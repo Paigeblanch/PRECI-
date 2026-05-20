@@ -5,8 +5,8 @@ import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/
 import type { NextFunction, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
 import { log } from "./logger.js";
-import { SignJWT, importPKCS8 } from "jose";
-import { randomBytes } from "crypto";
+import { SignJWT } from "jose";
+import { randomBytes, createPrivateKey } from "crypto";
 
 const WALLET = process.env.WALLET_ADDRESS ?? "";
 const X402_ENABLED = process.env.X402_ENABLED !== "false";
@@ -16,7 +16,7 @@ const CDP_KEY_NAME = process.env.CDP_API_KEY_NAME ?? "";
 const CDP_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
 
 async function signCDPJwt(uri: string): Promise<string> {
-  const privateKey = await importPKCS8(CDP_KEY_SECRET, "ES256");
+  const privateKey = createPrivateKey(CDP_KEY_SECRET);
   const nonce = randomBytes(16).toString("hex");
   const jwt = await new SignJWT({ uris: [uri] })
     .setProtectedHeader({ alg: "ES256", kid: CDP_KEY_NAME, nonce })
