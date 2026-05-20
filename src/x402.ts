@@ -1,161 +1,119 @@
-import { paymentMiddleware, x402ResourceServer } from "@x402/express";
-import { HTTPFacilitatorClient } from "@x402/core/server";
-import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions";
 import type { NextFunction, Request, Response } from "express";
-import type { Network } from "@x402/core/types";
 import { log } from "./logger.js";
-import { SignJWT } from "jose";
-import { randomBytes, createPrivateKey } from "crypto";
 
-const WALLET = process.env.WALLET_ADDRESS ?? "";
+const WALLET = (process.env.WALLET_ADDRESS ?? "").toLowerCase();
 const X402_ENABLED = process.env.X402_ENABLED !== "false";
-const NETWORK = "eip155:8453" as Network; // Base mainnet
-const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
-const CDP_KEY_NAME = process.env.CDP_API_KEY_NAME ?? "";
-const CDP_KEY_SECRET = process.env.CDP_API_KEY_SECRET ?? "";
+const BASE_RPC = "https://mainnet.base.org";
+const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-async function signCDPJwt(uri: string): Promise<string> {
-  const privateKey = createPrivateKey(CDP_KEY_SECRET.replace(/\\n/g, "\n"));
-  const nonce = randomBytes(16).toString("hex");
-  const jwt = await new SignJWT({ uris: [uri] })
-    .setProtectedHeader({ alg: "ES256", kid: CDP_KEY_NAME, nonce })
-    .setIssuedAt()
-    .setNotBefore(Math.floor(Date.now() / 1000))
-    .setExpirationTime("2m")
-    .setIssuer(CDP_KEY_NAME)
-    .setAudience(["cdp_service"])
-    .sign(privateKey);
-  return `Bearer ${jwt}`;
+// Prices in USDC atomic units (6 decimals)
+const PRICES: Record<string, { usdc: number; label: string }> = {
+  "POST /score/url":       { usdc: 0.005, label: "PRECI live URL probe" },
+  "POST /compare":         { usdc: 0.010, label: "PRECI multi-candidate comparison" },
+  "GET /score/:id/detail": { usdc: 0.003, label: "PRECI score detail" }
+};
+
+function matchRoute(method: string, path: string): string | null {
+  if (method === "POST" && path === "/score/url")   return "POST /score/url";
+  if (method === "POST" && path === "/compare")      return "POST /compare";
+  if (method === "GET"  && /^\/score\/[^/]+\/detail$/.test(path)) return "GET /score/:id/detail";
+  return null;
 }
 
-function passthrough(_req: Request, _res: Response, next: NextFunction) {
-  return next();
-}
-
-function buildMiddleware() {
-  const facilitator = new HTTPFacilitatorClient({
-    url: FACILITATOR_URL,
-    createAuthHeaders: async () => {
-      const [verifyToken, settleToken, supportedToken] = await Promise.all([
-        signCDPJwt(`${FACILITATOR_URL}/verify`),
-        signCDPJwt(`${FACILITATOR_URL}/settle`),
-        signCDPJwt(`${FACILITATOR_URL}/supported`)
-      ]);
-      return {
-        verify:    { Authorization: verifyToken },
-        settle:    { Authorization: settleToken },
-        supported: { Authorization: supportedToken }
-      };
-    }
-  });
-
-  const server = new x402ResourceServer(facilitator)
-    .register(NETWORK, new ExactEvmScheme())
-    .registerExtension(bazaarResourceServerExtension)
-    .onAfterSettle(async (ctx) => {
-      const payload = ctx.paymentPayload as Record<string, unknown>;
-      const reqs = ctx.requirements as Record<string, unknown>;
-      await log({
-        ts: new Date().toISOString(),
-        event: "payment_settled",
-        amount_usdc: reqs["amount"] ?? null,
-        network: reqs["network"] ?? null,
-        tx_hash: (payload["payload"] as any)?.transaction_hash ?? payload["transaction_hash"] ?? null,
-        payer: (payload["payload"] as any)?.from ?? payload["from"] ?? null,
-        resource: reqs["resource"] ?? null
-      });
-    });
-
-  const routes = {
-    "POST /score/url": {
-      accepts: { scheme: "exact", price: "$0.005", network: NETWORK, payTo: WALLET },
-      description: "Real-time trust score for any API URL. PRECI probes live, measures latency, checks SSL and JSON validity.",
-      mimeType: "application/json",
-      extensions: declareDiscoveryExtension({
-        bodyType: "json" as const,
-        inputSchema: {
-          type: "object",
-          properties: {
-            url: { type: "string", description: "The API endpoint URL to probe and score" },
-            service_id: { type: "string", description: "Optional stable identifier for this service" }
-          },
-          required: ["url"]
-        },
-        output: {
-          schema: {
-            type: "object",
-            properties: {
-              service_id: { type: "string" },
-              trust_score: { type: "integer", description: "0–100 composite trust score" },
-              verdict: { type: "string", enum: ["trusted", "verified", "provisional", "inactive"] },
-              probed_at: { type: "string", format: "date-time" }
-            }
-          }
-        }
-      })
-    },
-
-    "POST /compare": {
-      accepts: { scheme: "exact", price: "$0.010", network: NETWORK, payTo: WALLET },
-      description: "Submit 2–10 API URLs. PRECI probes all in parallel and returns a ranked list with a plain-English routing recommendation.",
-      mimeType: "application/json",
-      extensions: declareDiscoveryExtension({
-        bodyType: "json" as const,
-        inputSchema: {
-          type: "object",
-          properties: {
-            candidates: {
-              type: "array",
-              items: { type: "string" },
-              minItems: 2,
-              maxItems: 10
-            }
-          },
-          required: ["candidates"]
-        },
-        output: {
-          schema: {
-            type: "object",
-            properties: {
-              recommendation: { type: "string" },
-              reason: { type: "string" },
-              ranked: { type: "array" },
-              compared_at: { type: "string", format: "date-time" }
-            }
-          }
-        }
-      })
-    },
-
-    "GET /score/:id/detail": {
-      accepts: { scheme: "exact", price: "$0.003", network: NETWORK, payTo: WALLET },
-      description: "Full scoring breakdown with all five subscores for a previously probed service.",
-      mimeType: "application/json",
-      extensions: declareDiscoveryExtension({
-        pathParamsSchema: {
-          type: "object",
-          properties: {
-            id: { type: "string", description: "The service_id from a prior /score/url response" }
-          },
-          required: ["id"]
-        },
-        output: {
-          schema: {
-            type: "object",
-            properties: {
-              service_id: { type: "string" },
-              trust_score: { type: "integer" },
-              verdict: { type: "string" },
-              subscores: { type: "object" }
-            }
-          }
-        }
-      })
-    }
+function paymentRequired(res: Response, route: string) {
+  const { usdc, label } = PRICES[route];
+  const payment = {
+    x402Version: 2,
+    scheme: "exact",
+    network: "eip155:8453",
+    maxAmountRequired: String(Math.round(usdc * 1_000_000)),
+    asset: USDC,
+    payTo: process.env.WALLET_ADDRESS ?? "",
+    description: label
   };
-
-  return paymentMiddleware(routes, server);
+  res.setHeader("X-Payment-Required", JSON.stringify(payment));
+  return res.status(402).json({
+    error: "Payment Required",
+    message: `This endpoint costs $${usdc} USDC on Base. Include payment proof in the X-Payment header.`,
+    payment
+  });
 }
 
-export const x402 = X402_ENABLED ? buildMiddleware() : passthrough;
+async function verifyPayment(txHash: string, minUsdc: number): Promise<boolean> {
+  const minAtoms = BigInt(Math.round(minUsdc * 1_000_000));
+  try {
+    const resp = await fetch(BASE_RPC, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method: "eth_getTransactionReceipt",
+        params: [txHash]
+      }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await resp.json() as any;
+    const receipt = data?.result;
+    if (!receipt || receipt.status !== "0x1") return false;
+
+    // Look for a USDC Transfer to our wallet
+    const walletPadded = "0x000000000000000000000000" + WALLET.slice(2);
+    for (const log of receipt.logs ?? []) {
+      if (
+        log.address?.toLowerCase() === USDC &&
+        log.topics?.[0] === TRANSFER_TOPIC &&
+        log.topics?.[2]?.toLowerCase() === walletPadded
+      ) {
+        const amount = BigInt(log.data);
+        if (amount >= minAtoms) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function x402(req: Request, res: Response, next: NextFunction) {
+  if (!X402_ENABLED) return next();
+
+  const route = matchRoute(req.method, req.path);
+  if (!route) return next();
+
+  const headerRaw = Array.isArray(req.headers["x-payment"])
+    ? req.headers["x-payment"][0]
+    : req.headers["x-payment"];
+
+  if (!headerRaw) return paymentRequired(res, route);
+
+  let txHash: string;
+  try {
+    const parsed = JSON.parse(headerRaw);
+    txHash = parsed?.transaction_hash ?? parsed?.payload?.transaction_hash;
+    if (!txHash) return res.status(402).json({ error: "X-Payment must include transaction_hash." });
+  } catch {
+    return res.status(400).json({ error: "X-Payment must be valid JSON." });
+  }
+
+  const { usdc } = PRICES[route];
+
+  verifyPayment(txHash, usdc).then(valid => {
+    if (!valid) {
+      return res.status(402).json({ error: "Payment not verified. Transaction not found or insufficient amount." });
+    }
+    log({
+      ts: new Date().toISOString(),
+      event: "payment_settled",
+      amount_usdc: usdc,
+      network: "eip155:8453",
+      tx_hash: txHash,
+      payer: null,
+      resource: route
+    });
+    res.setHeader("X-Payment-Response", JSON.stringify({ status: "confirmed", amount: usdc, currency: "USDC" }));
+    next();
+  }).catch(() => {
+    res.status(500).json({ error: "Payment verification failed. Try again." });
+  });
+}
